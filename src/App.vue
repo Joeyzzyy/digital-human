@@ -220,9 +220,20 @@
       <!-- 导出控制面板 -->
       <a-card title="导出控制" :bordered="false" size="small" style="margin-top: 16px;">
         <div class="export-controls">
+          <!-- 添加预览按钮 -->
+          <a-button 
+            :disabled="!videoUrl || isExporting || isPreviewing" 
+            @click="startPreview"
+            block
+            style="margin-bottom: 8px;"
+          >
+            <eye-outlined />
+            {{ isPreviewing ? '预览中...' : '预览效果' }}
+          </a-button>
+          
           <a-button 
             type="primary" 
-            :disabled="!videoUrl || isExporting" 
+            :disabled="!videoUrl || isExporting || isPreviewing" 
             @click="startExport"
             block
           >
@@ -264,19 +275,67 @@
       :sticker-video="pendingVideoSticker"
       @confirm="handleTimeSelected"
     />
+
+    <!-- 添加预览弹窗 -->
+    <a-modal
+      v-model:visible="showPreviewModal"
+      title="效果预览"
+      :width="800"
+      :footer="null"
+      :destroyOnClose="true"
+      centered
+      @cancel="stopPreview"
+    >
+      <div class="preview-container">
+        <div class="preview-canvas-wrapper">
+          <canvas 
+            :key="'preview-' + Date.now()" 
+            ref="previewCanvasRef" 
+            class="preview-canvas"
+          ></canvas>
+        </div>
+        
+        <div class="preview-controls">
+          <a-space size="middle"> <!-- 增加间距 -->
+            <a-button @click="handlePreviewPlayPause">
+              <template #icon>
+                <pause-outlined v-if="isPreviewPlaying" />
+                <play-outlined v-else />
+              </template>
+              {{ isPreviewPlaying ? '暂停' : '播放' }}
+            </a-button>
+            
+            <a-slider
+              v-model:value="previewProgress"
+              :min="0"
+              :max="100"
+              :step="0.1"
+              :disabled="!previewVideo?.value"
+              style="width: 300px"
+              @change="handlePreviewSeek"
+            />
+            
+            <span class="preview-time">
+              {{ formatTime(previewCurrentTime) }} / {{ formatTime(previewDuration) }}
+            </span>
+          </a-space>
+        </div>
+      </div>
+    </a-modal>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, watch, defineComponent } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, watch, defineComponent, nextTick } from 'vue'
 import Vue3DraggableResizable from 'vue3-draggable-resizable'
 import 'vue3-draggable-resizable/dist/Vue3DraggableResizable.css'
 import { 
   VideoCameraOutlined,
   UpOutlined,
   DownOutlined,
-  CheckCircleOutlined,
-  DeleteOutlined 
+  DeleteOutlined,
+  EyeOutlined,
+  PauseOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 
@@ -351,7 +410,7 @@ const preloadResources = async () => {
       loadPromises.push(loadImage(backgroundUrl.value, 'background'))
     }
     
-    // 加载所有贴片
+    // 加所有贴片
     for (const sticker of stickers) {
       if (isVideoSticker(sticker)) {
         // 对于视频贴片，确保视频元素已准备就绪
@@ -422,10 +481,10 @@ const moveLayer = (index, direction) => {
   // 计算新的位置
   const newIndex = direction === 'up' ? index - 1 : index + 1
   
-  // 检查边界条件
+  // 检查边条件
   if (newIndex < 0 || newIndex >= layers.length) return
   
-  // 检查是否会移动到背景图层的位置
+  // 查是否会移动到背景图层的位置
   const targetLayer = layers[newIndex]
   if (targetLayer.type === 'background') {
     message.warning('无法移动到背景图层的位置')
@@ -442,7 +501,7 @@ const moveLayer = (index, direction) => {
   })))
 }
 
-// 修改更新导出进度的函数
+// 修改新导出进度的函数
 const updateExportProgress = () => {
   if (!videoRef.value || !isExporting.value) return
   
@@ -474,7 +533,7 @@ const updateExportProgress = () => {
   const elapsed = (Date.now() - startTime.value) / 1000 // 已经过的时间（秒）
   
   // 确保已经过了足够的时间来计算速率
-  if (elapsed >= 0.5 && currentTime > 0) { // 等待至少0.5秒以获得更准确的计算
+  if (elapsed >= 0.5 && currentTime > 0) { // 等待至少0.5秒以获更准确的计算
     const rate = currentTime / elapsed // 处理速率（秒/秒）
     console.log('处理速率计算:', { rate, elapsed, currentTime })
     
@@ -509,7 +568,7 @@ const startExport = async () => {
     // 预加载所资源
     await preloadResources()
     
-    // 确保视频准备就绪
+    // 确保视频准就绪
     if (videoRef.value) {
       videoRef.value.currentTime = 0
       try {
@@ -647,7 +706,7 @@ const renderFrame = async () => {
     // 获取主视频当前时间
     const mainVideoTime = videoRef.value.currentTime
     
-    // 按照图层顺序渲染
+    // 按照图顺序渲染
     const renderLayers = [...layers].reverse()
     
     for (const layer of renderLayers) {
@@ -972,7 +1031,7 @@ const onDrag = (index, { x, y }) => {
     const newY = parseFloat(y)
     
     if (!isNaN(newX) && !isNaN(newY)) {
-      // ���新贴片位置和transform属性
+      // 新贴片位置和transform属性
       sticker.x = newX
       sticker.y = newY
       sticker.transform = {
@@ -1049,7 +1108,7 @@ const initLocalResources = async () => {
       { id: 'bg2', name: '背景2', path: '/assets/backgrounds/lamer-bg.png' },
     ]
     
-    // 加载贴片列表并预加载所有视频贴片的预览图
+    // 加载贴片列表并预加载所有视频贴片的预览
     const stickers = [
       { id: 'sticker1', name: '赫莲娜机制片1', path: '/assets/stickers/helena-sticker.png' },
       { id: 'sticker2', name: '海蓝之谜机制贴片1', path: '/assets/stickers/lamer-sticker.png' },
@@ -1299,11 +1358,11 @@ const selectBackground = (bg) => {
         })
       }
     }
-    message.success(`已选择背景：${bg.name}`)
+    message.success(`已选择背：${bg.name}`)
   }
 }
 
-// 添加新的方法来强制背景图层保持在底部
+// 添加的方来强制背景图层保持在底部
 const ensureBackgroundAtBottom = () => {
   const bgLayerIndex = layers.findIndex(layer => layer.type === 'background')
   if (bgLayerIndex !== -1 && bgLayerIndex !== layers.length - 1) {
@@ -1464,7 +1523,7 @@ const VideoStartTimeModal = defineComponent({
       const remainingTime = props.mainVideo.duration - currentTime.value
       if (remainingTime < props.stickerVideo.duration) {
         const shortfall = props.stickerVideo.duration - remainingTime
-        message.error(`当前时间点无法完整放视频贴片：
+        message.error(`当前时间无法完整放视频贴片：
           - 贴片时长：${formatTime(props.stickerVideo.duration)}
           - 剩余时长：${formatTime(remainingTime)}
           - 缺少时间：${formatTime(shortfall)}
@@ -1543,7 +1602,7 @@ watch(() => videoUrl.value, (newUrl) => {
     videoStickers.forEach(sticker => {
       const video = stickerVideoRefs.value.get(sticker.id)
       if (video) {
-        // 先暂停视频播放
+        // 先停止视频放
         video.pause()
         // 移除视频引用前先清空src
         video.removeAttribute('src')
@@ -1555,12 +1614,12 @@ watch(() => videoUrl.value, (newUrl) => {
     videoStickers.forEach(sticker => {
       const index = stickers.findIndex(s => s.id === sticker.id)
       if (index !== -1) {
-        // 移除贴片
+        // 除贴片
         stickers.splice(index, 1)
         // 清理引用
         stickerVideoRefs.value.delete(sticker.id)
         loadedStickers.value.delete(sticker.id)
-        // 移除对应图层
+        // 移除对图层
         const layerIndex = layers.findIndex(l => l.id === sticker.id)
         if (layerIndex !== -1) {
           layers.splice(layerIndex, 1)
@@ -1780,6 +1839,328 @@ const handleStopExport = async () => {
     isStoppingExport.value = false
   }
 }
+
+// 添加预览相关的变量
+const isPreviewing = ref(false)
+const showPreviewModal = ref(false)
+const previewCanvasRef = ref(null)
+const previewVideo = ref(null)
+const isPreviewPlaying = ref(false)
+const previewProgress = ref(0)
+const previewCurrentTime = ref(0)
+const previewDuration = ref(0)
+const previewAnimationFrame = ref(null)
+
+// 使用固定的导出寸比例
+const EXPORT_WIDTH = 1080
+const EXPORT_HEIGHT = 1920
+const EXPORT_ASPECT_RATIO = EXPORT_WIDTH / EXPORT_HEIGHT
+
+// 添加视口尺寸计算函数
+const calculatePreviewSize = (containerWidth) => {
+  const viewportHeight = window.innerHeight
+  const maxPreviewHeight = viewportHeight * 0.7 // 预览高度最大占视口的70%
+  
+  // 先根据容器宽度计算高度
+  let previewWidth = containerWidth
+  let previewHeight = Math.floor(previewWidth / EXPORT_ASPECT_RATIO)
+  
+  // 如果高度超过最大允许高度，则根据高度反推宽度
+  if (previewHeight > maxPreviewHeight) {
+    previewHeight = maxPreviewHeight
+    previewWidth = Math.floor(previewHeight * EXPORT_ASPECT_RATIO)
+  }
+  
+  return {
+    width: previewWidth,
+    height: previewHeight
+  }
+}
+
+// 修改预览初始化函数
+const startPreview = async () => {
+  try {
+    isPreviewing.value = true
+    showPreviewModal.value = true
+    
+    await nextTick()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    
+    const canvas = previewCanvasRef.value
+    if (!canvas) {
+      throw new Error('预览画布未找到')
+    }
+    
+    const container = canvas.parentElement
+    if (!container) {
+      throw new Error('预览容器未找到')
+    }
+    
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      throw new Error('无法获取画布上下文')
+    }
+    
+    // 计算自适应尺寸
+    const { width: containerWidth, height: containerHeight } = calculatePreviewSize(container.clientWidth)
+    
+    console.log('预览画布尺寸:', {
+      容器原始宽度: container.clientWidth,
+      计算后尺寸: {
+        width: containerWidth,
+        height: containerHeight
+      },
+      视口高度: window.innerHeight
+    })
+    
+    canvas.width = containerWidth
+    canvas.height = containerHeight
+    
+    // 创建预览视频
+    if (!videoUrl.value) {
+      throw new Error('请先选择视频')
+    }
+    
+    previewVideo.value = document.createElement('video')
+    previewVideo.value.muted = false
+    previewVideo.value.src = videoUrl.value
+    previewVideo.value.playsInline = true // 添加这行
+    
+    // 等待视频加载
+    await new Promise((resolve, reject) => {
+      const handleLoad = () => {
+        previewVideo.value.removeEventListener('loadedmetadata', handleLoad)
+        previewDuration.value = previewVideo.value.duration
+        resolve()
+      }
+      previewVideo.value.addEventListener('loadedmetadata', handleLoad)
+      previewVideo.value.addEventListener('error', reject)
+      previewVideo.value.load()
+    })
+    
+    // 设置视频事件监听
+    previewVideo.value.addEventListener('timeupdate', () => {
+      if (previewVideo.value) {
+        previewCurrentTime.value = previewVideo.value.currentTime
+        previewProgress.value = (previewCurrentTime.value / previewDuration.value) * 100
+      }
+    })
+    
+    previewVideo.value.addEventListener('ended', () => {
+      isPreviewPlaying.value = false
+      if (previewAnimationFrame.value) {
+        cancelAnimationFrame(previewAnimationFrame.value)
+      }
+    })
+    
+    // 修改渲染预览函数，优化视频贴片处理
+    const renderPreview = () => {
+      if (!isPreviewing.value || !ctx || !canvas) return
+      
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      
+      const renderLayers = [...layers].reverse()
+      
+      for (const layer of renderLayers) {
+        if (!layer.visible) continue
+        
+        switch (layer.type) {
+          case 'background':
+            const bgImg = stickerImagesCache.get('background')
+            if (bgImg?.complete) {
+              ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height)
+            }
+            break
+            
+          case 'video':
+            if (previewVideo.value && previewVideo.value.readyState >= 2) {
+              ctx.drawImage(
+                previewVideo.value,
+                0,
+                0,
+                canvas.width,
+                canvas.height
+              )
+            }
+            break
+            
+          case 'sticker':
+            const sticker = stickers.find(s => s.id === layer.id)
+            if (!sticker) continue
+            
+            const scaleX = canvas.width / canvasWidth.value
+            const scaleY = canvas.height / canvasHeight.value
+            
+            const renderX = sticker.x * scaleX
+            const renderY = sticker.y * scaleY
+            const renderWidth = sticker.width * scaleX
+            const renderHeight = sticker.height * scaleY
+            
+            if (isVideoSticker(sticker)) {
+              const videoElement = stickerVideoRefs.value.get(sticker.id)
+              if (videoElement && videoElement.readyState >= 2) {
+                const startTime = sticker.videoProps?.startAt || 0
+                const duration = sticker.videoProps?.duration || 0
+                
+                if (previewCurrentTime.value >= startTime && 
+                    previewCurrentTime.value <= (startTime + duration)) {
+                  const clipTime = previewCurrentTime.value - startTime
+                  
+                  // 减少时间更新频率，避免频闪
+                  const timeDiff = Math.abs(videoElement.currentTime - clipTime)
+                  if (timeDiff > 0.2) { // 增加时间差阈值
+                    videoElement.currentTime = sticker.videoProps?.loop ? 
+                      clipTime % duration : Math.min(clipTime, duration)
+                  }
+                  
+                  // 使用 requestAnimationFrame 确保渲染同步
+                  ctx.drawImage(
+                    videoElement,
+                    renderX,
+                    renderY,
+                    renderWidth,
+                    renderHeight
+                  )
+                }
+              }
+            } else {
+              const img = stickerImagesCache.get(sticker.id)
+              if (img?.complete) {
+                ctx.drawImage(
+                  img,
+                  renderX,
+                  renderY,
+                  renderWidth,
+                  renderHeight
+                )
+              }
+            }
+            break
+        }
+      }
+      
+      previewAnimationFrame.value = requestAnimationFrame(renderPreview)
+    }
+    
+    // 添加窗口大小变化监听
+    const handleResize = () => {
+      if (!canvas || !container) return
+      
+      const { width, height } = calculatePreviewSize(container.clientWidth)
+      canvas.width = width
+      canvas.height = height
+    }
+    
+    window.addEventListener('resize', handleResize)
+    
+    // 开始渲染循环
+    renderPreview()
+    
+    // 清理函数
+    const cleanup = () => {
+      window.removeEventListener('resize', handleResize)
+    }
+    
+    // 在组件卸载或预览停止时清理
+    onUnmounted(cleanup)
+    watch(() => isPreviewing.value, (newValue) => {
+      if (!newValue) cleanup()
+    })
+    
+  } catch (error) {
+    console.error('预览初始化失败:', error)
+    message.error('预览初始化失败: ' + error.message)
+    await stopPreview()
+  }
+}
+
+// 修改停止预览函数
+const stopPreview = async () => {
+  isPreviewing.value = false
+  isPreviewPlaying.value = false
+  
+  if (previewAnimationFrame.value) {
+    cancelAnimationFrame(previewAnimationFrame.value)
+    previewAnimationFrame.value = null
+  }
+  
+  if (previewVideo.value) {
+    try {
+      previewVideo.value.pause()
+      previewVideo.value.src = ''
+      previewVideo.value.load()
+    } catch (err) {
+      console.warn('清理预览视频时出错:', err)
+    }
+    previewVideo.value = null
+  }
+  
+  previewProgress.value = 0
+  previewCurrentTime.value = 0
+  previewDuration.value = 0
+  
+  // 等待状态更新后再关闭弹窗
+  await nextTick()
+  showPreviewModal.value = false
+}
+
+// 修改播放/暂停处理函数
+const handlePreviewPlayPause = async () => {
+  if (!previewVideo.value) return
+  
+  try {
+    if (isPreviewPlaying.value) {
+      await previewVideo.value.pause()
+    } else {
+      await previewVideo.value.play()
+    }
+    isPreviewPlaying.value = !isPreviewPlaying.value
+  } catch (error) {
+    console.error('播放控制失败:', error)
+    message.error('播放控制失败')
+  }
+}
+
+// 修改进度条拖拽处理函数
+const handlePreviewSeek = (value) => {
+  if (!previewVideo.value || !isFinite(previewDuration.value)) return
+  
+  try {
+    const time = (value / 100) * previewDuration.value
+    previewVideo.value.currentTime = time
+    previewCurrentTime.value = time
+    
+    // 同步更新视频贴片的时间
+    for (const sticker of stickers) {
+      if (isVideoSticker(sticker)) {
+        const videoElement = stickerVideoRefs.value.get(sticker.id)
+        if (videoElement) {
+          const startTime = sticker.videoProps?.startAt || 0
+          const duration = sticker.videoProps?.duration || 0
+          if (time >= startTime && time <= (startTime + duration)) {
+            const clipTime = time - startTime
+            videoElement.currentTime = sticker.videoProps?.loop ? 
+              clipTime % duration : Math.min(clipTime, duration)
+          }
+        }
+      }
+    }
+    
+    console.log('进度更新:', {
+      value,
+      time,
+      duration: previewDuration.value,
+      currentTime: previewCurrentTime.value
+    })
+  } catch (error) {
+    console.error('设置播放进度失败:', error)
+  }
+}
+
+// 在组件卸载时清理
+onUnmounted(() => {
+  stopPreview()
+})
 </script>
 
 <style scoped>
@@ -2302,7 +2683,7 @@ const handleStopExport = async () => {
   color: #ff4d4f;
 }
 
-/* 添加新的样式 */
+/* 添加新的样 */
 .layer-info {
   display: flex;
   flex-direction: column;
@@ -2354,5 +2735,47 @@ const handleStopExport = async () => {
 .layer-item .ant-btn-text.ant-btn-dangerous[disabled] {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+/* 在 style 部分添加预览相关样式 */
+.preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  padding: 16px;
+  background: #f0f0f0;
+  border-radius: 4px;
+  align-items: center; /* 居中对齐内容 */
+}
+
+.preview-canvas-wrapper {
+  width: 30%; /* 画布保持30%宽度 */
+  margin: 0 auto;
+}
+
+.preview-canvas {
+  width: 100%;
+  height: auto;
+  background: #000;
+  border-radius: 4px;
+  display: block;
+}
+
+.preview-controls {
+  width: auto; /* 控制条恢复自动宽度 */
+  min-width: 500px; /* 设置最小宽度 */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 4px;
+}
+
+.preview-time {
+  font-family: monospace;
+  color: #666;
+  min-width: 100px; /* 确保时间显示有足够空间 */
+  text-align: center;
 }
 </style> 

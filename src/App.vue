@@ -44,14 +44,20 @@
             v-for="sticker in stickerList"
             :key="sticker.id"
             class="resource-item"
-            :class="{ disabled: isStrickerUsed(sticker.id) }"
-            @click="addSticker(sticker)"
+            :class="{ 
+              disabled: isStrickerUsed(sticker.id),
+              'video-sticker': isVideoSticker(sticker)
+            }"
+            @click="handleStickerClick(sticker)"
           >
             <img 
               :src="sticker.path.match(/\.(mp4|webm|mov)$/i) ? stickerImagesCache.get(sticker.path) : sticker.path" 
               class="resource-preview" 
             />
-            <div class="resource-name">{{ sticker.name }}</div>
+            <div class="resource-name">
+              {{ sticker.name }}
+              <span v-if="isVideoSticker(sticker)" class="video-badge">视频</span>
+            </div>
           </div>
         </div>
       </a-card>
@@ -150,29 +156,61 @@
           <template #renderItem="{ item, index }">
             <a-list-item>
               <div class="layer-item">
-                <a-space>
+                <div class="layer-content">
                   <div class="layer-preview">
-                    <img v-if="item.type === 'sticker' || item.type === 'background'" :src="item.url" />
-                    <video-camera-outlined v-else-if="item.type === 'video'" />
+                    <template v-if="item.type === 'sticker'">
+                      <img 
+                        v-if="item.mediaType === 'video'"
+                        :src="stickerImagesCache.get(item.url)" 
+                        class="preview-image"
+                      />
+                      <img 
+                        v-else 
+                        :src="item.url" 
+                        class="preview-image"
+                      />
+                    </template>
+                    <template v-else-if="item.type === 'background'">
+                      <img :src="item.url" class="preview-image" />
+                    </template>
+                    <template v-else-if="item.type === 'video'">
+                      <video-camera-outlined />
+                    </template>
                   </div>
-                  <span>{{ getLayerName(item) }}</span>
-                </a-space>
-                <a-space>
-                  <a-button 
-                    type="text" 
-                    :disabled="index === 0"
-                    @click="moveLayer(index, 'up')"
-                  >
-                    <up-outlined />
-                  </a-button>
-                  <a-button 
-                    type="text" 
-                    :disabled="index === layers.length - 1"
-                    @click="moveLayer(index, 'down')"
-                  >
-                    <down-outlined />
-                  </a-button>
-                </a-space>
+                  <div class="layer-info">
+                    <div class="layer-main">
+                      <div class="layer-name">{{ getLayerName(item) }}</div>
+                      <div class="layer-actions">
+                        <a-button 
+                          type="text" 
+                          :disabled="index === 0"
+                          @click="moveLayer(index, 'up')"
+                        >
+                          <up-outlined />
+                        </a-button>
+                        <a-button 
+                          type="text" 
+                          :disabled="index === layers.length - 1"
+                          @click="moveLayer(index, 'down')"
+                        >
+                          <down-outlined />
+                        </a-button>
+                        <a-button
+                          type="text"
+                          danger
+                          :disabled="item.type === 'background' || item.type === 'video'"
+                          @click="removeLayer(index)"
+                        >
+                          <delete-outlined />
+                        </a-button>
+                      </div>
+                    </div>
+                    <!-- 视频贴片时间信息放在第二行 -->
+                    <div v-if="item.type === 'sticker' && item.mediaType === 'video'" class="layer-time">
+                      播放时间: {{ formatTime(item.startAt) }} - {{ formatTime(item.startAt + item.duration) }}
+                    </div>
+                  </div>
+                </div>
               </div>
             </a-list-item>
           </template>
@@ -221,18 +259,26 @@
         </div>
       </div>
     </a-modal>
+
+    <VideoStartTimeModal
+      v-model:visible="showTimeModal"
+      :main-video="{ url: videoUrl, duration: videoRef?.duration }"
+      :sticker-video="pendingVideoSticker"
+      @confirm="handleTimeSelected"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, watch, defineComponent } from 'vue'
 import Vue3DraggableResizable from 'vue3-draggable-resizable'
 import 'vue3-draggable-resizable/dist/Vue3DraggableResizable.css'
 import { 
   VideoCameraOutlined,
   UpOutlined,
   DownOutlined,
-  CheckCircleOutlined 
+  CheckCircleOutlined,
+  DeleteOutlined 
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 
@@ -417,7 +463,7 @@ const updateExportProgress = () => {
   
   // 确保视频已经开始播放且时间值有效
   if (!isFinite(currentTime) || !isFinite(videoDuration) || videoDuration === 0) {
-    console.log('视频时间值无效，等待...')
+    console.log('频时间值无效，等待...')
     remainingTime.value = '计算中...'
     requestAnimationFrame(updateExportProgress)
     return
@@ -462,7 +508,7 @@ const startExport = async () => {
     // 初始化导出画布
     initExportCanvas()
     
-    // 预加载所有资源
+    // 预加载所资源
     await preloadResources()
     
     // 确保视频准备就绪
@@ -491,7 +537,7 @@ const startExport = async () => {
       }
     }
     
-    // 重置所有视频贴片到起始位置并确保播放
+    // 重置所有视频贴片到始位置并确保播放
     const videoPlayPromises = []
     for (const videoElement of stickerVideoRefs.value.values()) {
       if (videoElement && typeof videoElement.play === 'function') {
@@ -542,7 +588,7 @@ const startExport = async () => {
         }
       }
       
-      // 设置���制完成处理
+      // 设置制完成处理
       mediaRecorder.value.onstop = () => {
         try {
           const blob = new Blob(recordedChunks.value, { type: 'video/webm' })
@@ -565,7 +611,7 @@ const startExport = async () => {
         }
       }
       
-      // 开始录制
+      // 开始录���
       mediaRecorder.value.start(1000)
       
       // 开始渲染循环
@@ -601,23 +647,23 @@ const renderFrame = async () => {
     const ctx = exportContext.value
     ctx.clearRect(0, 0, exportCanvas.value.width, exportCanvas.value.height)
     
-    // 获取画布尺寸
-    const { width: canvasWidth, height: canvasHeight } = getCanvasDimensions()
+    // 获取主视频当前时间
+    const mainVideoTime = videoRef.value.currentTime
     
     // 按照图层顺序渲染
     const renderLayers = [...layers].reverse()
-
+    
     for (const layer of renderLayers) {
       if (!layer.visible) continue
-
+      
       switch (layer.type) {
         case 'background':
           const bgImg = stickerImagesCache.get('background')
           if (bgImg?.complete) {
             ctx.drawImage(bgImg, 0, 0, exportCanvas.value.width, exportCanvas.value.height)
           }
-          break;
-
+          break
+          
         case 'video':
           if (videoRef.value) {
             ctx.drawImage(
@@ -628,32 +674,50 @@ const renderFrame = async () => {
               exportCanvas.value.height
             )
           }
-          break;
-
+          break
+          
         case 'sticker':
           const sticker = stickers.find(s => s.id === layer.id)
           if (!sticker) continue
-
+          
           if (isVideoSticker(sticker)) {
             // 处理视频贴片
             const videoElement = stickerVideoRefs.value.get(sticker.id)
-            if (videoElement && !videoElement.ended) {
-              // 计算导出尺寸和位置
-              const renderX = Math.round((sticker.x / canvasWidth) * exportCanvas.value.width)
-              const renderY = Math.round((sticker.y / canvasHeight) * exportCanvas.value.height)
-              const exportWidth = Math.round(sticker.width * (exportCanvas.value.width / canvasWidth))
-              const exportHeight = Math.round(sticker.height * (exportCanvas.value.height / canvasHeight))
-
-              ctx.drawImage(
-                videoElement,
-                renderX,
-                renderY,
-                exportWidth,
-                exportHeight
-              )
+            if (videoElement) {
+              // 检查是否应该显示这个视频贴片
+              const startTime = sticker.videoProps.startAt || 0
+              const duration = sticker.videoProps.duration || 0
+              
+              // 只有在主视频时间在贴片的播放时间范围内才渲染
+              if (mainVideoTime >= startTime && mainVideoTime <= (startTime + duration)) {
+                // 算贴片应该显示的间点
+                const clipTime = mainVideoTime - startTime
+                
+                // 如果视频贴片循环播放，使用取模计算当前时间
+                if (sticker.videoProps.loop) {
+                  videoElement.currentTime = clipTime % duration
+                } else {
+                  videoElement.currentTime = Math.min(clipTime, duration)
+                }
+                
+                // 计算渲染位置和尺寸
+                const renderX = Math.round((sticker.x / canvasWidth) * exportCanvas.value.width)
+                const renderY = Math.round((sticker.y / canvasHeight) * exportCanvas.value.height)
+                const exportWidth = Math.round(sticker.width * (exportCanvas.value.width / canvasWidth))
+                const exportHeight = Math.round(sticker.height * (exportCanvas.value.height / canvasHeight))
+                
+                // 渲染视频贴片
+                ctx.drawImage(
+                  videoElement,
+                  renderX,
+                  renderY,
+                  exportWidth,
+                  exportHeight
+                )
+              }
             }
           } else {
-            // 处理图片贴片
+            // 处��图片贴片
             const img = stickerImagesCache.get(sticker.id)
             if (!img?.complete) continue
             
@@ -671,10 +735,10 @@ const renderFrame = async () => {
               exportHeight
             )
           }
-          break;
+          break
       }
     }
-
+    
     // 继续渲染循环
     if (!videoRef.value.ended) {
       requestAnimationFrame(renderFrame)
@@ -698,7 +762,7 @@ const initExportCanvas = () => {
   // 获取 2D 上下文并设置合适的选项
   exportContext.value = exportCanvas.value.getContext('2d', {
     alpha: false,  // 禁用 alpha 道以提高性能
-    willReadFrequently: false  // 不需要频繁读���像素数据
+    willReadFrequently: false  // 不需要频繁读像素数据
   })
   
   // 设置图像平滑
@@ -797,7 +861,7 @@ const getSupportedMimeType = () => {
     }
   }
   
-  console.warn('未找到支持的编码格式，使用默认格式');
+  console.warn('未找到支持的编码格式，使用默格式');
   return 'video/webm';
 }
 
@@ -879,7 +943,7 @@ const onResize = (index, { x, y, width, height }) => {
   if (index >= 0 && index < stickers.length) {
     const sticker = stickers[index]
     
-    // 只在有宽高数据时更新
+    // 只在有宽数据时更新
     if (width !== undefined && height !== undefined) {
       sticker.width = Math.max(20, width)
       sticker.height = Math.max(20, height)
@@ -960,7 +1024,7 @@ const initLocalResources = async () => {
 
     stickerList.value = stickersWithPreviews
     
-    console.log('本地素材加载完成，缓存状态:', {
+    console.log('本地素材加载完，缓存状态:', {
       视频缩略图: videoList.value.filter(v => v.thumbnail).length,
       贴片预览图: Array.from(stickerImagesCache.keys()),
       总缓存数量: stickerImagesCache.size
@@ -976,6 +1040,12 @@ const addSticker = (sticker) => {
   const stickerId = `sticker-${Date.now()}`
   
   if (sticker.path.match(/\.(mp4|webm|mov)$/i)) {
+    // 检查是否有主视频
+    if (!videoUrl.value || !videoRef.value) {
+      message.error('请先选择主视频后再添加视频贴片')
+      return
+    }
+    
     console.log('正在添加视频贴片:', sticker)
     
     const video = document.createElement('video')
@@ -984,62 +1054,17 @@ const addSticker = (sticker) => {
     video.loop = true
     
     video.addEventListener('loadedmetadata', () => {
-      // 计算合适的初始显示尺寸
-      const MAX_INITIAL_SIZE = 200 // 与图片贴片保持一致
-      const aspectRatio = video.videoWidth / video.videoHeight
-      let initialWidth, initialHeight
-      
-      if (aspectRatio >= 1) {
-        // 横向视频
-        initialWidth = MAX_INITIAL_SIZE
-        initialHeight = MAX_INITIAL_SIZE / aspectRatio
-      } else {
-        // 纵向视频
-        initialHeight = MAX_INITIAL_SIZE
-        initialWidth = MAX_INITIAL_SIZE * aspectRatio
+      // 保存待处理的视频贴片信息
+      pendingVideoSticker.value = {
+        video,
+        sticker,
+        duration: video.duration,
+        width: video.videoWidth,
+        height: video.videoHeight
       }
       
-      const newSticker = {
-        id: stickerId,
-        originalId: sticker.id,
-        url: sticker.path,
-        type: 'video',
-        x: 20,
-        y: 20,
-        width: Math.round(initialWidth),     // 使用计算后的初始宽度
-        height: Math.round(initialHeight),    // 使用计算后的初始高度
-        originalWidth: video.videoWidth,      // 保存原始尺寸以供参考
-        originalHeight: video.videoHeight,
-        videoProps: {
-          muted: true,
-          loop: true,
-          currentTime: 0
-        }
-      }
-      
-      console.log('视频贴片初始化尺寸:', {
-        原始尺寸: `${video.videoWidth}x${video.videoHeight}`,
-        显示尺寸: `${newSticker.width}x${newSticker.height}`,
-        纵横比: aspectRatio.toFixed(2)
-      })
-      
-      stickers.push(newSticker)
-      stickerVideoRefs.value.set(stickerId, video)
-      loadedStickers.value.add(stickerId)
-      
-      layers.unshift({
-        type: 'sticker',
-        id: stickerId,
-        url: sticker.path,
-        mediaType: 'video',
-        visible: true
-      })
-      
-      video.play().catch(err => {
-        console.error('视频播放失败:', err)
-      })
-      
-      message.success(`已添加视频贴片：${sticker.name}`)
+      // 显示时间选择弹窗
+      showTimeModal.value = true
     })
     
     video.addEventListener('error', (e) => {
@@ -1050,44 +1075,39 @@ const addSticker = (sticker) => {
     video.src = sticker.path
     video.load()
   } else {
-    // 原有的图片贴片处理逻辑
+    // 原有的图片贴片处理逻辑保持不变
     const img = new Image()
-    img.src = sticker.path
-    
     img.onload = () => {
-      const initialWidth = img.naturalWidth
-      const initialHeight = img.naturalHeight
-      
       const newSticker = {
         id: stickerId,
         originalId: sticker.id,
         url: sticker.path,
+        type: 'image',
         x: 20,
         y: 20,
-        width: initialWidth,
-        height: initialHeight,
-        // 保存原始尺寸
-        originalWidth: initialWidth,
-        originalHeight: initialHeight,
+        width: 200,
+        height: 200,
+        originalWidth: img.naturalWidth,
+        originalHeight: img.naturalHeight
       }
       
       stickers.push(newSticker)
-      
-      // 缓存图片
       stickerImagesCache.set(stickerId, img)
       loadedStickers.value.add(stickerId)
       
-      // 始终将新贴片添图层最顶部（数组开头）
       layers.unshift({
         type: 'sticker',
         id: stickerId,
         url: sticker.path,
+        mediaType: 'image',
         visible: true
       })
       
-      ensureBackgroundAtBottom() // 确保背景在底部
-      console.log('贴片添加成功:', newSticker)
       message.success(`已添加贴片：${sticker.name}`)
+    }
+    
+    img.onerror = () => {
+      message.error(`加载贴片失败：${sticker.name}`)
     }
     
     img.src = sticker.path
@@ -1096,8 +1116,8 @@ const addSticker = (sticker) => {
 
 // 修改 isStrickerUsed 方法
 const isStrickerUsed = (stickerId) => {
-  const isUsed = stickers.some(s => s.originalId === stickerId)
-  return isUsed // 返回布尔值，用于控制样式
+  // 检查是否在当前贴片列表中
+  return stickers.some(s => s.originalId === stickerId)
 }
 
 // 添加获取图层名称的方法
@@ -1116,41 +1136,41 @@ const getLayerName = (layer) => {
 
 // 修改获取视频缩略图的方法
 const getVideoThumbnail = async (videoPath) => {
+  // 检查缓存
+  if (stickerImagesCache.get(videoPath)) {
+    return stickerImagesCache.get(videoPath)
+  }
+
   return new Promise((resolve, reject) => {
     const video = document.createElement('video')
     video.crossOrigin = 'anonymous'
-    video.preload = 'metadata' // 添加预加载设置
+    video.preload = 'metadata'
     
-    // 添加错误处理
     video.onerror = (error) => {
       console.error('视频加载失败:', error)
       reject(error)
     }
     
-    // 监听元数据加载完成
     video.onloadedmetadata = () => {
-      // 设置到视频的中间位置以获取更有代表性的帧
       video.currentTime = video.duration / 2
     }
     
-    // 监听特定帧加载完成
     video.onseeked = () => {
       try {
-        // 创建canvas并设置合适的尺寸
         const canvas = document.createElement('canvas')
-        const maxSize = 200 // 限制缩略图最大尺寸
+        const maxSize = 200
         const ratio = Math.min(maxSize / video.videoWidth, maxSize / video.videoHeight)
         canvas.width = video.videoWidth * ratio
         canvas.height = video.videoHeight * ratio
         
-        // 绘制视频帧
         const ctx = canvas.getContext('2d')
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
         
-        // 转换为base64并返回
-        const thumbnail = canvas.toDataURL('image/jpeg', 0.7) // 使用较低质量以减小大小
+        const thumbnail = canvas.toDataURL('image/jpeg', 0.7)
         
-        // 清理资源
+        // 缓存生成的预览图
+        stickerImagesCache.set(videoPath, thumbnail)
+        
         video.remove()
         canvas.remove()
         
@@ -1161,15 +1181,14 @@ const getVideoThumbnail = async (videoPath) => {
       }
     }
     
-    // 设置视频源并开始加载
     video.src = videoPath
   }).catch(error => {
     console.warn('获取视频缩略图失败:', error)
-    return null // 失败时返回 null
+    return null
   })
 }
 
-// 修改添加视频的方法,让视频可以插入到任意位置
+// 修添加视频的方法,让视频可以插入到任意位置
 const selectVideo = (video) => {
   if (videoUrl.value === video.path) {
     // 如果是当前选中的视频，则取消选择
@@ -1179,7 +1198,7 @@ const selectVideo = (video) => {
     if (videoLayerIndex !== -1) {
       layers.splice(videoLayerIndex, 1)
     }
-    message.success(`已移除视频：${video.name}`)
+    message.success(`��移除视频：${video.name}`)
   } else {
     // 选择新视频
     videoUrl.value = video.path
@@ -1251,7 +1270,7 @@ const handleDragResize = (index, pos, type) => {
 }
 
 const handleResize = (index, rect) => {
-  console.log('resize 事件原始数据:', { index, rect })
+  console.log('resize 事件始数据:', { index, rect })
 
   if (index >= 0 && index < stickers.length) {
     const sticker = stickers[index]
@@ -1304,7 +1323,7 @@ const handleStickerImageLoad = (event, sticker) => {
   // 计算宽比
   const aspectRatio = naturalWidth / naturalHeight
   
-  // 更新贴片尺寸以匹配图片比例
+  // 更新片尺寸以匹配图片比例
   if (sticker.width / sticker.height !== aspectRatio) {
     // 保持当前宽度，调整高度
     sticker.height = Math.round(sticker.width / aspectRatio)
@@ -1330,8 +1349,296 @@ const isVideoSticker = (sticker) => {
   return sticker?.url?.match(/\.(mp4|webm|mov)$/i)
 }
 
-// 1. 首先添加一个新的 ref 来存储所有视频贴片的引用
+// 1. 首先添加一个新的 ref 来存所有视频贴片的引用
 const stickerVideoRefs = ref(new Map())
+
+// 1. 定义视频贴片时间选择弹窗组件
+const VideoStartTimeModal = defineComponent({
+  props: {
+    visible: Boolean,
+    mainVideo: Object,
+    stickerVideo: Object,
+  },
+  emits: ['update:visible', 'confirm', 'cancel'],
+  setup(props, { emit }) {
+    const currentTime = ref(0)
+    const videoRef = ref(null)
+    
+    const formatTime = (seconds) => {
+      if (!seconds) return '0:00'
+      const mins = Math.floor(seconds / 60)
+      const secs = Math.floor(seconds % 60)
+      return `${mins}:${secs.toString().padStart(2, '0')}`
+    }
+    
+    const handleConfirm = () => {
+      if (!props.mainVideo?.duration || !props.stickerVideo?.duration) {
+        message.error('视频信息不完整')
+        return
+      }
+
+      // 检查剩余时间是否足够
+      const remainingTime = props.mainVideo.duration - currentTime.value
+      if (remainingTime < props.stickerVideo.duration) {
+        const shortfall = props.stickerVideo.duration - remainingTime
+        message.error(`当前时间点无法完整放视频贴片：
+          - 贴片时长：${formatTime(props.stickerVideo.duration)}
+          - 剩余时长：${formatTime(remainingTime)}
+          - 缺少时间：${formatTime(shortfall)}
+          请选择更早的时间点`)
+        return
+      }
+      
+      emit('confirm', currentTime.value)
+      emit('update:visible', false)
+    }
+
+    return {
+      currentTime,
+      videoRef,
+      formatTime,
+      handleConfirm
+    }
+  },
+  template: `
+    <a-modal
+      :visible="visible"
+      title="选择视频贴片起始时间"
+      @cancel="$emit('update:visible', false)"
+      @ok="handleConfirm"
+      :width="600"
+      :centered="true"
+      :destroyOnClose="true"
+    >
+      <div class="time-selector">
+        <div class="video-container" style="width: 70%;">
+          <video
+            style="width: 70%;"
+            ref="videoRef"
+            :src="mainVideo?.url"
+            controls
+            @timeupdate="(e) => currentTime = e.target.currentTime"
+          />
+        </div>
+        <div class="time-info">
+          <div class="time-row">
+            <span class="time-label">当前选择时间点：</span>
+            <span class="time-value">{{ formatTime(currentTime) }}</span>
+          </div>
+          <div class="time-row">
+            <span class="time-label">视频贴片时长：</span>
+            <span class="time-value">{{ formatTime(stickerVideo?.duration) }}</span>
+          </div>
+          <div class="time-row">
+            <span class="time-label">主视频总时长：</span>
+            <span class="time-value">{{ formatTime(mainVideo?.duration) }}</span>
+          </div>
+          <div class="time-row">
+            <span class="time-label">剩余可用时长：</span>
+            <span class="time-value" :class="{ 'time-warning': (mainVideo?.duration - currentTime) < (stickerVideo?.duration || 0) }">
+              {{ formatTime(mainVideo?.duration - currentTime) }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </a-modal>
+  `
+})
+
+// 2. 主要逻辑代码
+const showTimeModal = ref(false)
+const pendingVideoSticker = ref(null)
+
+// 监听主视频变化
+watch(() => videoUrl.value, (newUrl) => {
+  if (newUrl) {
+    // 先获取需要清理的视频贴片
+    const videoStickers = stickers.filter(s => s.type === 'video')
+    
+    // 先停止所有视频播放
+    videoStickers.forEach(sticker => {
+      const video = stickerVideoRefs.value.get(sticker.id)
+      if (video) {
+        // 先暂停视频播放
+        video.pause()
+        // 移除视频引用前先清空src
+        video.removeAttribute('src')
+        video.load()
+      }
+    })
+
+    // 然后清理其他资源
+    videoStickers.forEach(sticker => {
+      const index = stickers.findIndex(s => s.id === sticker.id)
+      if (index !== -1) {
+        // 移除贴片
+        stickers.splice(index, 1)
+        // 清理引用
+        stickerVideoRefs.value.delete(sticker.id)
+        loadedStickers.value.delete(sticker.id)
+        // 移除对应图层
+        const layerIndex = layers.findIndex(l => l.id === sticker.id)
+        if (layerIndex !== -1) {
+          layers.splice(layerIndex, 1)
+        }
+      }
+    })
+
+    if (videoStickers.length > 0) {
+      message.warning('主视频已更换，所有视频贴片已被清除')
+    }
+  }
+})
+
+// 处理时间选择确认
+const handleTimeSelected = (startTime) => {
+  if (!pendingVideoSticker.value) return
+  
+  const { video, sticker, duration, width, height } = pendingVideoSticker.value
+  const stickerId = `sticker-${Date.now()}`
+  
+  // 计算合的初始显示尺寸
+  const MAX_INITIAL_SIZE = 200
+  const aspectRatio = width / height
+  let initialWidth, initialHeight
+  
+  if (aspectRatio >= 1) {
+    initialWidth = MAX_INITIAL_SIZE
+    initialHeight = MAX_INITIAL_SIZE / aspectRatio
+  } else {
+    initialHeight = MAX_INITIAL_SIZE
+    initialWidth = MAX_INITIAL_SIZE * aspectRatio
+  }
+  
+  // 确保视频贴片的预览图已经被缓存
+  if (!stickerImagesCache.get(sticker.path)) {
+    console.warn('视频贴片预览图未找到，尝试重新生成')
+    getVideoThumbnail(sticker.path).then(thumbnail => {
+      if (thumbnail) {
+        stickerImagesCache.set(sticker.path, thumbnail)
+        console.log('视频贴片预览图已重新生成并缓存')
+      }
+    })
+  }
+  
+  const newSticker = {
+    id: stickerId,
+    originalId: sticker.id,
+    url: sticker.path,  // 使用原始路径，这样可以通过它找到缓存的预览图
+    type: 'video',
+    x: 20,
+    y: 20,
+    width: Math.round(initialWidth),
+    height: Math.round(initialHeight),
+    originalWidth: width,
+    originalHeight: height,
+    videoProps: {
+      muted: true,
+      loop: false,
+      currentTime: 0,
+      startAt: startTime,
+      duration: duration
+    }
+  }
+  
+  stickers.push(newSticker)
+  stickerVideoRefs.value.set(stickerId, video)
+  loadedStickers.value.add(stickerId)
+  
+  // 更新图层信息
+  layers.unshift({
+    type: 'sticker',
+    id: stickerId,
+    url: sticker.path,  // 保持使用原始路径
+    mediaType: 'video',
+    visible: true,
+    startAt: startTime,
+    duration: duration
+  })
+  
+  video.play().catch(err => {
+    console.error('视频播放失败:', err)
+  })
+  
+  message.success(`已添加视频贴片：${sticker.name}`)
+  pendingVideoSticker.value = null
+}
+
+// 添加新的方法和状态
+const formatTime = (seconds) => {
+  if (!seconds) return '0:00'
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+// 修改处理贴片点击的方法
+const handleStickerClick = (sticker) => {
+  // 检查贴片是否已被使用
+  if (isStrickerUsed(sticker.id)) {
+    message.warning('该贴片已被使用')
+    return
+  }
+  
+  // 如果是视频贴片，需要先检查是否有主视频
+  if (isVideoSticker(sticker)) {
+    if (!videoUrl.value || !videoRef.value) {
+      message.error('请先选择主视频后再添加视频贴片')
+      return
+    }
+  }
+  
+  addSticker(sticker)
+}
+
+// 添加删除图层的方法
+const removeLayer = (index) => {
+  const layer = layers[index]
+  
+  // 如果是贴片,需要清理相关资源
+  if (layer.type === 'sticker') {
+    // 从stickers数组中移除
+    const stickerIndex = stickers.findIndex(s => s.id === layer.id)
+    if (stickerIndex !== -1) {
+      const sticker = stickers[stickerIndex]
+      
+      // 如果是视频贴片,清理视频资源
+      if (isVideoSticker(sticker)) {
+        const video = stickerVideoRefs.value.get(sticker.id)
+        if (video) {
+          video.pause()
+          video.src = ''
+          video.load()
+          stickerVideoRefs.value.delete(sticker.id)
+        }
+      }
+      
+      stickers.splice(stickerIndex, 1)
+      loadedStickers.value.delete(sticker.id)
+    }
+  }
+  
+  // 从图层列表中移除
+  layers.splice(index, 1)
+  
+  message.success('已移除图层')
+  
+  // 打印调试信息
+  console.log('图层移除后的状态:', {
+    剩余图层: layers.length,
+    剩余贴片: stickers.length,
+    视频引用: Array.from(stickerVideoRefs.value.keys()),
+    已加载贴片: Array.from(loadedStickers.value)
+  })
+}
+
+// 添加调试日志
+watch(stickerImagesCache, (newCache) => {
+  console.log('预览图缓存更新:', {
+    缓存数量: newCache.size,
+    缓存键列表: Array.from(newCache.keys())
+  })
+}, { deep: true })
 </script>
 
 <style scoped>
@@ -1380,27 +1687,113 @@ const stickerVideoRefs = ref(new Map())
 }
 
 .layer-item {
+  width: 100%;
+  padding: 4px 0;
+}
+
+.layer-content {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.layer-preview {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f0f0f0;
+  border: 1px solid #e8e8e8;
+}
+
+.preview-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 视频图标样式 */
+.layer-preview .anticon {
+  font-size: 18px;
+  color: #666;
+}
+
+.layer-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.layer-main {
   display: flex;
   justify-content: space-between;
   align-items: center;
   width: 100%;
 }
 
-.layer-preview {
+.layer-name {
+  font-size: 14px;
+  color: #333;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 8px;
+}
+
+.layer-time {
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.layer-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.layer-actions .ant-btn {
+  min-width: 24px;
   width: 24px;
   height: 24px;
-  border-radius: 2px;
-  overflow: hidden;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f0f0f0;
 }
 
-.layer-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.layer-actions .ant-btn-text.ant-btn-dangerous {
+  opacity: 0.8;
+}
+
+.layer-actions .ant-btn-text.ant-btn-dangerous:hover {
+  opacity: 1;
+  background: rgba(255, 77, 79, 0.1);
+}
+
+.layer-actions .ant-btn-text.ant-btn-dangerous[disabled] {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* 优化列表项样式 */
+:deep(.ant-list-item) {
+  padding: 8px !important;
+  border-radius: 4px;
+}
+
+:deep(.ant-list-item:hover) {
+  background: #f5f5f5;
 }
 
 .sticker-container {
@@ -1604,7 +1997,7 @@ const stickerVideoRefs = ref(new Map())
   gap: 8px;
 }
 
-/* 确保最后一个控制项没有底部边距 */
+/* 确保最后一个控项没有底部边距 */
 .control-item:last-child {
   margin-bottom: 0;
 }
@@ -1701,5 +2094,124 @@ const stickerVideoRefs = ref(new Map())
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.time-selector {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.video-container {
+  width: 100%;
+  height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+  text-align: center;
+}
+
+.video-container video {
+  max-width: 100%;
+  max-height: 280px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  margin: 0 auto;
+}
+
+.time-info {
+  background: #f5f5f5;
+  padding: 15px;
+  border-radius: 4px;
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.time-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 8px 0;
+  font-size: 14px;
+  text-align: center;
+}
+
+.time-label {
+  color: #666;
+  flex: 0 0 120px;
+  text-align: right;
+  padding-right: 10px;
+}
+
+.time-value {
+  color: #333;
+  font-weight: 500;
+  flex: 0 0 100px;
+  text-align: left;
+}
+
+.time-warning {
+  color: #ff4d4f;
+}
+
+/* 添加新的样式 */
+.layer-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.layer-name {
+  font-size: 14px;
+}
+
+.layer-time {
+  font-size: 12px;
+  color: #666;
+}
+
+.video-badge {
+  background: #1890ff;
+  color: #fff;
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.resource-item.video-sticker .resource-preview {
+  background: #000;
+}
+
+.resource-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f5f5f5;
+}
+
+.resource-item.disabled:hover {
+  border-color: #d9d9d9;
+}
+
+/* 添加删除按钮的悬停样式 */
+.layer-item .ant-btn-text.ant-btn-dangerous {
+  opacity: 0.8;
+}
+
+.layer-item .ant-btn-text.ant-btn-dangerous:hover {
+  opacity: 1;
+  background: rgba(255, 77, 79, 0.1);
+}
+
+.layer-item .ant-btn-text.ant-btn-dangerous[disabled] {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 </style> 

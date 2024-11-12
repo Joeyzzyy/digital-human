@@ -229,7 +229,7 @@ const exportContext = ref(null)
 
 const layers = reactive([])
 const exportProgress = ref(0)
-const remainingTime = ref('计算��...')
+const remainingTime = ref('计算...')
 const startTime = ref(0)
 
 // 添加新的响应式变量来跟踪激活的
@@ -519,7 +519,7 @@ const renderFrame = async () => {
           const canvasWidth = canvasRef.value.clientWidth
           const canvasHeight = canvasRef.value.clientHeight
           
-          // 使用保存的缩放比例（如果没有则使用当前尺寸计算���
+          // 使用保存的缩放比例（如果没有则使用当前尺寸计算
           const scale = sticker.scale || (sticker.width / sticker.originalWidth)
           
           // 计算导出尺寸（应用缩放比例）
@@ -1060,6 +1060,8 @@ const handleStickerImageLoad = (event, sticker) => {
   gap: 20px;
   padding: 20px;
   height: 100vh;
+  overflow: hidden;
+  min-width: 1024px;
 }
 
 .canvas-container {
@@ -1070,11 +1072,14 @@ const handleStickerImageLoad = (event, sticker) => {
   background: #f0f0f0;
   border-radius: 8px;
   overflow: hidden;
+  min-height: 400px;
 }
 
 .canvas {
-  width: 540px;
-  height: 960px;
+  aspect-ratio: 9/16;
+  height: 95%;
+  min-height: 400px;
+  max-height: 90vh;
   background: #fff;
   position: relative;
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);

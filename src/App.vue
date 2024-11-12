@@ -972,7 +972,7 @@ const onDrag = (index, { x, y }) => {
     const newY = parseFloat(y)
     
     if (!isNaN(newX) && !isNaN(newY)) {
-      // 更新贴片位置和transform属性
+      // ���新贴片位置和transform属性
       sticker.x = newX
       sticker.y = newY
       sticker.transform = {
@@ -1397,7 +1397,7 @@ const handleStickerImageLoad = (event, sticker) => {
   }
 }
 
-// 添加判断���数
+// 添加判断数
 const isVideoSticker = (sticker) => {
   return sticker?.url?.match(/\.(mp4|webm|mov)$/i)
 }
@@ -1416,6 +1416,36 @@ const VideoStartTimeModal = defineComponent({
   setup(props, { emit }) {
     const currentTime = ref(0)
     const videoRef = ref(null)
+    const modalWidth = ref(600)
+    
+    // 添加视口自适应逻辑
+    onMounted(() => {
+      const updateModalSize = () => {
+        // 获取视口宽度
+        const vw = window.innerWidth
+        // 如果视口宽度小于700px，使用90%的宽度
+        // 如果视口宽度在700px-1200px之间，使用600px
+        // 如果视口宽度大于1200px，使用800px
+        if (vw < 700) {
+          modalWidth.value = Math.min(vw * 0.9, 600)
+        } else if (vw >= 700 && vw <= 1200) {
+          modalWidth.value = 600
+        } else {
+          modalWidth.value = 800
+        }
+      }
+      
+      // 初始更新
+      updateModalSize()
+      
+      // 监听窗口大小变化
+      window.addEventListener('resize', updateModalSize)
+      
+      // 组件卸载时移除监听
+      onUnmounted(() => {
+        window.removeEventListener('resize', updateModalSize)
+      })
+    })
     
     const formatTime = (seconds) => {
       if (!seconds) return '0:00'
@@ -1449,6 +1479,7 @@ const VideoStartTimeModal = defineComponent({
     return {
       currentTime,
       videoRef,
+      modalWidth,
       formatTime,
       handleConfirm
     }
@@ -1456,39 +1487,39 @@ const VideoStartTimeModal = defineComponent({
   template: `
     <a-modal
       :visible="visible"
-      title="选择视频贴片起始时间"
+      title="选择视频贴片开始时间"
       @cancel="$emit('update:visible', false)"
       @ok="handleConfirm"
-      :width="600"
+      :width="modalWidth"
       :centered="true"
       :destroyOnClose="true"
     >
-      <div class="time-selector">
-        <div class="video-container" style="width: 70%;">
+      <div class="time-selector" style="display: flex; flex-direction: column; align-items: center; gap: 20px;">
+        <div class="video-container" style="width: 60%; display: flex; justify-content: center;">
           <video
-            style="width: 70%;"
             ref="videoRef"
             :src="mainVideo?.url"
             controls
+            style="width: 100%; max-width: min(100%, 260px);"
             @timeupdate="(e) => currentTime = e.target.currentTime"
           />
         </div>
-        <div class="time-info">
-          <div class="time-row">
-            <span class="time-label">当前选择时间点：</span>
+        <div class="time-info" style="width: 100%; max-width: min(100%, 400px);">
+          <div class="time-row" style="display: flex; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap;">
+            <span class="time-label" style="min-width: 120px;">当前选择时间点：</span>
             <span class="time-value">{{ formatTime(currentTime) }}</span>
           </div>
-          <div class="time-row">
-            <span class="time-label">视频贴片时长：</span>
+          <div class="time-row" style="display: flex; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap;">
+            <span class="time-label" style="min-width: 120px;">视频贴片时长：</span>
             <span class="time-value">{{ formatTime(stickerVideo?.duration) }}</span>
           </div>
-          <div class="time-row">
-            <span class="time-label">主视频总时长：</span>
+          <div class="time-row" style="display: flex; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap;">
+            <span class="time-label" style="min-width: 120px;">主视频总时长：</span>
             <span class="time-value">{{ formatTime(mainVideo?.duration) }}</span>
           </div>
-          <div class="time-row">
-            <span class="time-label">剩余可用时长：</span>
-            <span class="time-value" :class="{ 'time-warning': (mainVideo?.duration - currentTime) < (stickerVideo?.duration || 0) }">
+          <div class="time-row" style="display: flex; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap;">
+            <span class="time-label" style="min-width: 120px;">剩余可用时长：</span>
+            <span class="time-value" :style="{ color: (mainVideo?.duration - currentTime) < (stickerVideo?.duration || 0) ? '#ff4d4f' : 'inherit' }">
               {{ formatTime(mainVideo?.duration - currentTime) }}
             </span>
           </div>

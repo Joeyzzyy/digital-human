@@ -47,7 +47,10 @@
             :class="{ disabled: isStrickerUsed(sticker.id) }"
             @click="addSticker(sticker)"
           >
-            <img :src="sticker.path" class="resource-preview" />
+            <img 
+              :src="sticker.path.match(/\.(mp4|webm|mov)$/i) ? stickerImagesCache.get(sticker.path) : sticker.path" 
+              class="resource-preview" 
+            />
             <div class="resource-name">{{ sticker.name }}</div>
           </div>
         </div>
@@ -103,15 +106,34 @@
           class="sticker-container"
           :style="{ 
             zIndex: getLayerIndex(sticker.id),
-            visibility: isLayerVisible(sticker.id) ? 'visible' : 'hidden'
+            visibility: isLayerVisible(sticker.id) ? 'open' : 'hidden'
           }"
         >
           <div class="sticker-wrapper">
-            <img 
-              :src="sticker.url" 
-              class="sticker-image" 
-              draggable="false"
-            />
+            <!-- 根据缓存的元素类型显示不同内容 -->
+            <template v-if="isVideoSticker(sticker)">
+              <video
+                :src="sticker.url"
+                class="sticker-video"
+                :style="{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain'
+                }"
+                muted
+                playsinline
+                loop
+                autoplay
+                ref="stickerVideoRef"
+              ></video>
+            </template>
+            <template v-else>
+              <img 
+                :src="sticker.url" 
+                class="sticker-image"
+                draggable="false"
+              />
+            </template>
           </div>
         </Vue3DraggableResizable>
       </div>
@@ -174,7 +196,7 @@
 
     <!-- 进度弹窗 -->
     <a-modal
-      v-model:visible="showExportProgress"
+      v-model:open="showExportProgress"
       title="导出进度"
       :closable="false"
       :maskClosable="false"
@@ -251,6 +273,16 @@ const preloadResources = async () => {
   
   const loadImage = (url, id) => {
     return new Promise((resolve, reject) => {
+      // 如果是视频贴片，直接返回缓存的预览图
+      if (url.match(/\.(mp4|webm|mov)$/i)) {
+        const cachedPreview = stickerImagesCache.get(url)
+        if (cachedPreview) {
+          loadedStickers.value.add(id)
+          resolve(cachedPreview)
+          return
+        }
+      }
+
       const img = new Image()
       img.onload = () => {
         stickerImagesCache.set(id, img)
@@ -262,7 +294,7 @@ const preloadResources = async () => {
         })
         resolve(img)
       }
-      img.onerror = () => reject(new Error(`图片加载失败: ${id}`))
+      img.onerror = () => reject(new Error(`图片加载失败: ${url}`))
       img.src = url
     })
   }
@@ -276,13 +308,30 @@ const preloadResources = async () => {
     }
     
     // 加载所有贴片
-    loadPromises.push(...stickers.map(sticker => 
-      loadImage(sticker.url, sticker.id)
-    ))
+    for (const sticker of stickers) {
+      if (isVideoSticker(sticker)) {
+        // 对于视频贴片，确保视频元素已准备就绪
+        const videoElement = stickerVideoRefs.value.get(sticker.id)
+        if (videoElement) {
+          loadPromises.push(
+            new Promise((resolve) => {
+              if (videoElement.readyState >= 2) { // HAVE_CURRENT_DATA
+                resolve()
+              } else {
+                videoElement.addEventListener('loadeddata', () => resolve(), { once: true })
+              }
+            })
+          )
+        }
+      } else {
+        // 对于图片贴片，加载图片
+        loadPromises.push(loadImage(sticker.url, sticker.id))
+      }
+    }
     
     await Promise.all(loadPromises)
     
-    console.log('所有资源加载成', {
+    console.log('所有资源加载完成', {
       背景图: !!backgroundUrl.value,
       贴片数量: stickers.length,
       已加载数量: loadedStickers.value.size,
@@ -297,22 +346,10 @@ const preloadResources = async () => {
 // 修改视频加载处理
 const handleVideoLoad = () => {
   if (videoRef.value) {
-    const video = videoRef.value
-    video.width = exportCanvas.value.width
-    video.height = exportCanvas.value.height
-    
-    // 确保视频保持比例
-    video.style.objectFit = 'contain'
-    
     console.log('视频加载完成:', {
-      videoSize: {
-        width: video.videoWidth,
-        height: video.videoHeight
-      },
-      canvasSize: {
-        width: exportCanvas.value.width,
-        height: exportCanvas.value.height
-      }
+      duration: videoRef.value.duration,
+      readyState: videoRef.value.readyState,
+      currentTime: videoRef.value.currentTime
     })
   }
 }
@@ -361,27 +398,57 @@ const moveLayer = (index, direction) => {
   })))
 }
 
-// 更导出
+// 修改更新导出进度的函数
 const updateExportProgress = () => {
   if (!videoRef.value || !isExporting.value) return
   
   const currentTime = videoRef.value.currentTime
   const videoDuration = videoRef.value.duration
+  
+  // 添加调试日志
+  console.log('进度计算数据:', {
+    currentTime,
+    videoDuration,
+    startTime: startTime.value,
+    elapsed: (Date.now() - startTime.value) / 1000,
+    isPlaying: !videoRef.value.paused,
+    readyState: videoRef.value.readyState
+  })
+  
+  // 确保视频已经开始播放且时间值有效
+  if (!isFinite(currentTime) || !isFinite(videoDuration) || videoDuration === 0) {
+    console.log('视频时间值无效，等待...')
+    remainingTime.value = '计算中...'
+    requestAnimationFrame(updateExportProgress)
+    return
+  }
+  
   const progress = (currentTime / videoDuration) * 100
   exportProgress.value = Math.round(progress)
   
   // 计算剩余时间
-  const elapsed = (Date.now() - startTime.value) / 1000
-  const rate = currentTime / elapsed
-  const remaining = (videoDuration - currentTime) / rate
-  remainingTime.value = `${Math.round(remaining)}秒`
+  const elapsed = (Date.now() - startTime.value) / 1000 // 已经过的时间（秒）
   
-  if (progress < 100) {
+  // 确保已经过了足够的时间来计算速率
+  if (elapsed >= 0.5 && currentTime > 0) { // 等待至少0.5秒以获得更准确的计算
+    const rate = currentTime / elapsed // 处理速率（秒/秒）
+    console.log('处理速率计算:', { rate, elapsed, currentTime })
+    
+    if (rate > 0) {
+      const remaining = (videoDuration - currentTime) / rate
+      if (isFinite(remaining) && remaining > 0) {
+        remainingTime.value = `${Math.round(remaining)}秒`
+      }
+    }
+  }
+  
+  // 继续更新进度
+  if (progress < 100 && isExporting.value) {
     requestAnimationFrame(updateExportProgress)
   }
 }
 
-// 修改开始导出法
+// 修改开始导出函数
 const startExport = async () => {
   if (!videoUrl.value || isExporting.value) return
   
@@ -390,8 +457,7 @@ const startExport = async () => {
     isExporting.value = true
     showExportProgress.value = true
     exportProgress.value = 0
-    startTime.value = Date.now()
-    recordedChunks.value = []
+    remainingTime.value = '计算中...'
     
     // 初始化导出画布
     initExportCanvas()
@@ -399,58 +465,117 @@ const startExport = async () => {
     // 预加载所有资源
     await preloadResources()
     
+    // 确保视频准备就绪
+    if (videoRef.value) {
+      videoRef.value.currentTime = 0
+      try {
+        await new Promise((resolve, reject) => {
+          const timeupdate = () => {
+            if (videoRef.value.currentTime > 0) {
+              videoRef.value.removeEventListener('timeupdate', timeupdate)
+              resolve()
+            }
+          }
+          videoRef.value.addEventListener('timeupdate', timeupdate)
+          
+          videoRef.value.play().catch(reject)
+        })
+        
+        // 只有在视频真正开始播放后才设置开始时间
+        startTime.value = Date.now()
+        console.log('视频开始播放，设置开始时间:', startTime.value)
+        
+      } catch (err) {
+        console.error('视频播放失败:', err)
+        throw new Error('无法播放视频')
+      }
+    }
+    
+    // 重置所有视频贴片到起始位置并确保播放
+    const videoPlayPromises = []
+    for (const videoElement of stickerVideoRefs.value.values()) {
+      if (videoElement && typeof videoElement.play === 'function') {
+        try {
+          videoElement.currentTime = 0
+          videoPlayPromises.push(
+            videoElement.play()
+              .catch(err => console.warn('播放视频贴片失败:', err))
+          )
+        } catch (err) {
+          console.warn('设置视频贴片播放失败:', err)
+        }
+      }
+    }
+    
+    try {
+      await Promise.all(videoPlayPromises)
+    } catch (err) {
+      console.warn('等待视频播放时出错:', err)
+    }
+    
     // 创建媒体流
-    const stream = exportCanvas.value.captureStream(30) // 设置帧率为30fps
+    const stream = exportCanvas.value.captureStream(30)
     
     // 添加音频轨道（如果有）
     if (videoRef.value) {
-      const audioTracks = videoRef.value.captureStream().getAudioTracks()
-      if (audioTracks.length > 0) {
-        stream.addTrack(audioTracks[0])
+      try {
+        const audioTracks = videoRef.value.captureStream().getAudioTracks()
+        if (audioTracks.length > 0) {
+          stream.addTrack(audioTracks[0])
+        }
+      } catch (err) {
+        console.warn('添加音频轨道失败:', err)
       }
     }
     
     // 配置媒体录制器
-    mediaRecorder.value = new MediaRecorder(stream, {
-      mimeType: getSupportedMimeType(),
-      videoBitsPerSecond: 8000000 // 设置视频比特率
-    })
-    
-    // 设置数据处理
-    mediaRecorder.value.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        recordedChunks.value.push(event.data)
-      }
-    }
-    
-    // 设置录制完成处理
-    mediaRecorder.value.onstop = () => {
-      const blob = new Blob(recordedChunks.value, { type: 'video/webm' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'output.webm'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+    try {
+      mediaRecorder.value = new MediaRecorder(stream, {
+        mimeType: getSupportedMimeType(),
+        videoBitsPerSecond: 8000000
+      })
       
-      isExporting.value = false
-      showExportProgress.value = false
-      exportProgress.value = 0
-      message.success('视频导出功')
+      // 设置数据处理
+      mediaRecorder.value.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunks.value.push(event.data)
+        }
+      }
+      
+      // 设置���制完成处理
+      mediaRecorder.value.onstop = () => {
+        try {
+          const blob = new Blob(recordedChunks.value, { type: 'video/webm' })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = 'output.webm'
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+          
+          isExporting.value = false
+          showExportProgress.value = false
+          exportProgress.value = 0
+          message.success('视频导出成功')
+        } catch (err) {
+          console.error('保存导出文件失败:', err)
+          message.error('保存导出文件失败')
+        }
+      }
+      
+      // 开始录制
+      mediaRecorder.value.start(1000)
+      
+      // 开始渲染循环
+      renderFrame()
+      updateExportProgress()
+      
+    } catch (err) {
+      console.error('创建媒体录制器失败:', err)
+      throw new Error('创建媒体录制器失败')
     }
-    
-    // 开始录制前确保视频准备就绪
-    videoRef.value.currentTime = 0
-    await videoRef.value.play()
-    
-    // 开始录制
-    mediaRecorder.value.start(1000) // 每秒生成一个数据块
-    
-    // 开始渲染循环
-    renderFrame()
-    updateExportProgress()
     
   } catch (error) {
     console.error('导出失败:', error)
@@ -459,7 +584,16 @@ const startExport = async () => {
   }
 }
 
-// 修改渲染帧函数，添加更多的错误处理和日志
+// 1. 首先添加画布尺寸的计算函数
+const getCanvasDimensions = () => {
+  const canvas = canvasRef.value
+  return {
+    width: canvas?.clientWidth || 0,
+    height: canvas?.clientHeight || 0
+  }
+}
+
+// 2. 修改 renderFrame 函数
 const renderFrame = async () => {
   if (!isExporting.value || !videoRef.value) return
   
@@ -467,26 +601,14 @@ const renderFrame = async () => {
     const ctx = exportContext.value
     ctx.clearRect(0, 0, exportCanvas.value.width, exportCanvas.value.height)
     
-    // 计算缩放比例
-    const displayCanvas = canvasRef.value
-    const ratio = {
-      x: exportCanvas.value.width / displayCanvas.clientWidth,
-      y: exportCanvas.value.height / displayCanvas.clientHeight
-    }
-
-    // 重要：反转图层数组以确保正确的渲染顺序
-    // 因为 layers 数组中，索引越小表示图层越靠前
+    // 获取画布尺寸
+    const { width: canvasWidth, height: canvasHeight } = getCanvasDimensions()
+    
+    // 按照图层顺序渲染
     const renderLayers = [...layers].reverse()
 
-    // 按照图层顺序渲染
     for (const layer of renderLayers) {
-      // 检查图层是否可见
-      if (!layer.visible) {
-        console.log(`跳过不可见图层: ${layer.id}`)
-        continue
-      }
-
-      console.log(`渲染图层: ${layer.id}, 类型: ${layer.type}, z-index: ${getLayerIndex(layer.id)}`)
+      if (!layer.visible) continue
 
       switch (layer.type) {
         case 'background':
@@ -512,58 +634,43 @@ const renderFrame = async () => {
           const sticker = stickers.find(s => s.id === layer.id)
           if (!sticker) continue
 
-          const img = stickerImagesCache.get(sticker.id)
-          if (!img?.complete) continue
+          if (isVideoSticker(sticker)) {
+            // 处理视频贴片
+            const videoElement = stickerVideoRefs.value.get(sticker.id)
+            if (videoElement && !videoElement.ended) {
+              // 计算导出尺寸和位置
+              const renderX = Math.round((sticker.x / canvasWidth) * exportCanvas.value.width)
+              const renderY = Math.round((sticker.y / canvasHeight) * exportCanvas.value.height)
+              const exportWidth = Math.round(sticker.width * (exportCanvas.value.width / canvasWidth))
+              const exportHeight = Math.round(sticker.height * (exportCanvas.value.height / canvasHeight))
 
-          // 获取画布尺寸
-          const canvasWidth = canvasRef.value.clientWidth
-          const canvasHeight = canvasRef.value.clientHeight
-          
-          // 使用保存的缩放比例（如果没有则使用当前尺寸计算
-          const scale = sticker.scale || (sticker.width / sticker.originalWidth)
-          
-          // 计算导出尺寸（应用缩放比例）
-          const exportWidth = Math.round(sticker.originalWidth * scale * (exportCanvas.value.width / canvasWidth))
-          const exportHeight = Math.round(sticker.originalHeight * scale * (exportCanvas.value.height / canvasHeight))
-          
-          // 计算位置
-          const renderX = Math.round((sticker.x / canvasWidth) * exportCanvas.value.width)
-          const renderY = Math.round((sticker.y / canvasHeight) * exportCanvas.value.height)
-
-          console.log('贴片最终渲染:', {
-            贴片ID: sticker.id,
-            缩放信息: {
-              保存的比例: sticker.scale,
-              计算的比例: sticker.width / sticker.originalWidth,
-              使用的比例: scale
-            },
-            尺寸信息: {
-              原始: {
-                width: sticker.originalWidth,
-                height: sticker.originalHeight
-              },
-              当前: {
-                width: sticker.width,
-                height: sticker.height
-              },
-              导出: {
-                width: exportWidth,
-                height: exportHeight
-              }
-            },
-            位置: {
-              当前: { x: sticker.x, y: sticker.y },
-              渲染: { x: renderX, y: renderY }
+              ctx.drawImage(
+                videoElement,
+                renderX,
+                renderY,
+                exportWidth,
+                exportHeight
+              )
             }
-          })
+          } else {
+            // 处理图片贴片
+            const img = stickerImagesCache.get(sticker.id)
+            if (!img?.complete) continue
+            
+            // 计算导出尺寸和位置
+            const renderX = Math.round((sticker.x / canvasWidth) * exportCanvas.value.width)
+            const renderY = Math.round((sticker.y / canvasHeight) * exportCanvas.value.height)
+            const exportWidth = Math.round(sticker.width * (exportCanvas.value.width / canvasWidth))
+            const exportHeight = Math.round(sticker.height * (exportCanvas.value.height / canvasHeight))
 
-          ctx.drawImage(
-            img,
-            renderX,
-            renderY,
-            exportWidth,
-            exportHeight
-          )
+            ctx.drawImage(
+              img,
+              renderX,
+              renderY,
+              exportWidth,
+              exportHeight
+            )
+          }
           break;
       }
     }
@@ -591,7 +698,7 @@ const initExportCanvas = () => {
   // 获取 2D 上下文并设置合适的选项
   exportContext.value = exportCanvas.value.getContext('2d', {
     alpha: false,  // 禁用 alpha 道以提高性能
-    willReadFrequently: false  // 不需要频繁读取像素数据
+    willReadFrequently: false  // 不需要频繁读���像素数据
   })
   
   // 设置图像平滑
@@ -603,21 +710,74 @@ const initExportCanvas = () => {
   exportContext.value.fillRect(0, 0, exportCanvas.value.width, exportCanvas.value.height)
 }
 
-// 优化的停止导出方法
+// 3. 修改 stopExport 函数中的错误处理
 const stopExport = async () => {
   console.log('停止导出')
   if (!isExporting.value) return
   
   try {
-    await videoRef.value?.pause()
-    if (mediaRecorder.value?.state !== 'inactive') {
-      mediaRecorder.value.stop()
+    // 暂停主视频
+    if (videoRef.value) {
+      try {
+        await videoRef.value.pause()
+      } catch (err) {
+        console.warn('暂停主视频失败:', err)
+      }
     }
+    
+    // 停止所有视频贴片的播放
+    const pausePromises = []
+    for (const videoElement of stickerVideoRefs.value.values()) {
+      if (videoElement && !videoElement.paused && typeof videoElement.pause === 'function') {
+        try {
+          pausePromises.push(
+            new Promise((resolve) => {
+              videoElement.pause()
+                .then(() => resolve())
+                .catch((err) => {
+                  console.warn('暂停视频贴片失败:', err)
+                  resolve() // 即使失败也resolve
+                })
+            })
+          )
+        } catch (err) {
+          console.warn('创建暂停Promise失败:', err)
+        }
+      }
+    }
+    
+    // 等待所有暂停操作完
+    if (pausePromises.length > 0) {
+      try {
+        await Promise.all(pausePromises)
+      } catch (err) {
+        console.warn('等待视频暂停时出错:', err)
+      }
+    }
+    
+    // 停止媒体录制
+    if (mediaRecorder.value && mediaRecorder.value.state !== 'inactive') {
+      try {
+        mediaRecorder.value.stop()
+      } catch (err) {
+        console.error('停止媒体录制失败:', err)
+      }
+    }
+    
+    // 重置状态
     isExporting.value = false
     showExportProgress.value = false
+    exportProgress.value = 0
+    
+    console.log('导出停止完成')
+    
   } catch (error) {
     console.error('停止导出时出错:', error)
     message.error('停止导出时出错')
+    // 确保状态被重置
+    isExporting.value = false
+    showExportProgress.value = false
+    exportProgress.value = 0
   }
 }
 
@@ -743,7 +903,7 @@ const onResize = (index, { x, y, width, height }) => {
   }
 }
 
-// 1. 添加新的响应式变量
+// 1. 添加新的应式变量
 const videoList = ref([])      // 视频列表
 const backgroundList = ref([]) // 背景图列表
 const stickerList = ref([])    // 贴片列表
@@ -755,7 +915,6 @@ const initLocalResources = async () => {
     const videos = [
       { id: 'video1', name: '赫莲娜口播', path: '/assets/videos/helena.mp4' },
       { id: 'video2', name: '海蓝之谜口播', path: '/assets/videos/lamer.mp4' },
-      // ... 更多视频
     ]
     
     // 为每个视频获取缩略图
@@ -767,23 +926,45 @@ const initLocalResources = async () => {
     )
     
     videoList.value = videosWithThumbnails
-    console.log('视频资源加载完成，包含缩略图')
     
     // 加载背景图列表
     backgroundList.value = [
       { id: 'bg1', name: '赫莲娜背景', path: '/assets/backgrounds/helena-bg.png' },
       { id: 'bg2', name: '背景2', path: '/assets/backgrounds/lamer-bg.png' },
-      // ... 更多背景
     ]
     
-    // 加载贴片列表
-    stickerList.value = [
+    // 加载贴片列表并预加载所有视频贴片的预览图
+    const stickers = [
       { id: 'sticker1', name: '赫莲娜机制片1', path: '/assets/stickers/helena-sticker.png' },
-      { id: 'sticker2', name: '贴片2', path: '/assets/stickers/lamer-sticker.png' },
-      // ... 更多贴片
+      { id: 'sticker2', name: '海蓝之谜机制贴片1', path: '/assets/stickers/lamer-sticker.png' },
+      { id: 'sticker3', name: '测试视频贴片', path: '/assets/stickers/video-sticker.mp4' },
     ]
+
+    // 预加载所有贴片的预览图
+    const stickersWithPreviews = await Promise.all(
+      stickers.map(async (sticker) => {
+        if (sticker.path.match(/\.(mp4|webm|mov)$/i)) {
+          try {
+            const thumbnail = await getVideoThumbnail(sticker.path)
+            if (thumbnail) {
+              stickerImagesCache.set(sticker.path, thumbnail)
+              console.log(`视频贴片 ${sticker.name} 的预览图已预加载`)
+            }
+          } catch (error) {
+            console.error(`预加载视频贴片 ${sticker.name} 的预览图失败:`, error)
+          }
+        }
+        return sticker
+      })
+    )
+
+    stickerList.value = stickersWithPreviews
     
-    console.log('本地素材加载完成')
+    console.log('本地素材加载完成，缓存状态:', {
+      视频缩略图: videoList.value.filter(v => v.thumbnail).length,
+      贴片预览图: Array.from(stickerImagesCache.keys()),
+      总缓存数量: stickerImagesCache.size
+    })
   } catch (error) {
     console.error('加载本地素材失败:', error)
     message.error('加载素材失败')
@@ -793,46 +974,124 @@ const initLocalResources = async () => {
 // 3. 添加素材选择相关方法
 const addSticker = (sticker) => {
   const stickerId = `sticker-${Date.now()}`
-  const img = new Image()
-  img.src = sticker.path
   
-  img.onload = () => {
-    const initialWidth = img.naturalWidth
-    const initialHeight = img.naturalHeight
+  if (sticker.path.match(/\.(mp4|webm|mov)$/i)) {
+    console.log('正在添加视频贴片:', sticker)
     
-    const newSticker = {
-      id: stickerId,
-      originalId: sticker.id,
-      url: sticker.path,
-      x: 20,
-      y: 20,
-      width: initialWidth,
-      height: initialHeight,
-      // 保存原始尺寸
-      originalWidth: initialWidth,
-      originalHeight: initialHeight
-    }
+    const video = document.createElement('video')
+    video.muted = true
+    video.playsInline = true
+    video.loop = true
     
-    stickers.push(newSticker)
-    
-    // 缓存图片
-    stickerImagesCache.set(stickerId, img)
-    loadedStickers.value.add(stickerId)
-    
-    // 始终将新贴片添加到图层最顶部（数组开头）
-    layers.unshift({
-      type: 'sticker',
-      id: stickerId,
-      url: sticker.path,
-      visible: true
+    video.addEventListener('loadedmetadata', () => {
+      // 计算合适的初始显示尺寸
+      const MAX_INITIAL_SIZE = 200 // 与图片贴片保持一致
+      const aspectRatio = video.videoWidth / video.videoHeight
+      let initialWidth, initialHeight
+      
+      if (aspectRatio >= 1) {
+        // 横向视频
+        initialWidth = MAX_INITIAL_SIZE
+        initialHeight = MAX_INITIAL_SIZE / aspectRatio
+      } else {
+        // 纵向视频
+        initialHeight = MAX_INITIAL_SIZE
+        initialWidth = MAX_INITIAL_SIZE * aspectRatio
+      }
+      
+      const newSticker = {
+        id: stickerId,
+        originalId: sticker.id,
+        url: sticker.path,
+        type: 'video',
+        x: 20,
+        y: 20,
+        width: Math.round(initialWidth),     // 使用计算后的初始宽度
+        height: Math.round(initialHeight),    // 使用计算后的初始高度
+        originalWidth: video.videoWidth,      // 保存原始尺寸以供参考
+        originalHeight: video.videoHeight,
+        videoProps: {
+          muted: true,
+          loop: true,
+          currentTime: 0
+        }
+      }
+      
+      console.log('视频贴片初始化尺寸:', {
+        原始尺寸: `${video.videoWidth}x${video.videoHeight}`,
+        显示尺寸: `${newSticker.width}x${newSticker.height}`,
+        纵横比: aspectRatio.toFixed(2)
+      })
+      
+      stickers.push(newSticker)
+      stickerVideoRefs.value.set(stickerId, video)
+      loadedStickers.value.add(stickerId)
+      
+      layers.unshift({
+        type: 'sticker',
+        id: stickerId,
+        url: sticker.path,
+        mediaType: 'video',
+        visible: true
+      })
+      
+      video.play().catch(err => {
+        console.error('视频播放失败:', err)
+      })
+      
+      message.success(`已添加视频贴片：${sticker.name}`)
     })
     
-    ensureBackgroundAtBottom() // 确保背景在底部
-    console.log('贴片添加成功:', newSticker)
-    message.success(`已添加贴片：${sticker.name}`)
+    video.addEventListener('error', (e) => {
+      console.error('视频加载失败:', e.target.error)
+      message.error(`视频加载失败：${e.target.error.message}`)
+    })
+    
+    video.src = sticker.path
+    video.load()
+  } else {
+    // 原有的图片贴片处理逻辑
+    const img = new Image()
+    img.src = sticker.path
+    
+    img.onload = () => {
+      const initialWidth = img.naturalWidth
+      const initialHeight = img.naturalHeight
+      
+      const newSticker = {
+        id: stickerId,
+        originalId: sticker.id,
+        url: sticker.path,
+        x: 20,
+        y: 20,
+        width: initialWidth,
+        height: initialHeight,
+        // 保存原始尺寸
+        originalWidth: initialWidth,
+        originalHeight: initialHeight,
+      }
+      
+      stickers.push(newSticker)
+      
+      // 缓存图片
+      stickerImagesCache.set(stickerId, img)
+      loadedStickers.value.add(stickerId)
+      
+      // 始终将新贴片添图层最顶部（数组开头）
+      layers.unshift({
+        type: 'sticker',
+        id: stickerId,
+        url: sticker.path,
+        visible: true
+      })
+      
+      ensureBackgroundAtBottom() // 确保背景在底部
+      console.log('贴片添加成功:', newSticker)
+      message.success(`已添加贴片：${sticker.name}`)
+    }
+    
+    img.src = sticker.path
   }
-  
-  img.src = sticker.path
 }
 
 // 修改 isStrickerUsed 方法
@@ -857,42 +1116,56 @@ const getLayerName = (layer) => {
 
 // 修改获取视频缩略图的方法
 const getVideoThumbnail = async (videoPath) => {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const video = document.createElement('video')
     video.crossOrigin = 'anonymous'
-    video.src = videoPath
-    
-    // 监听可以寻找时间点时
-    video.addEventListener('loadedmetadata', () => {
-      // 设置到 0.5 秒或者视频总时长的 10%，取较小值
-      video.currentTime = Math.min(0.5, video.duration * 0.1)
-    })
-    
-    // 当时间更新后获取帧
-    video.addEventListener('timeupdate', () => {
-      // 创建临时canvas
-      const canvas = document.createElement('canvas')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      
-      // 绘制视频帧
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      
-      // 转换为base64
-      const thumbnail = canvas.toDataURL('image/jpeg')
-      resolve(thumbnail)
-      
-      // 清理资源
-      video.remove()
-      canvas.remove()
-    }, { once: true }) // 只执行一次
+    video.preload = 'metadata' // 添加预加载设置
     
     // 添加错误处理
-    video.addEventListener('error', () => {
-      console.error('获取视频缩略图失败:', videoPath)
-      resolve(null)
-    })
+    video.onerror = (error) => {
+      console.error('视频加载失败:', error)
+      reject(error)
+    }
+    
+    // 监听元数据加载完成
+    video.onloadedmetadata = () => {
+      // 设置到视频的中间位置以获取更有代表性的帧
+      video.currentTime = video.duration / 2
+    }
+    
+    // 监听特定帧加载完成
+    video.onseeked = () => {
+      try {
+        // 创建canvas并设置合适的尺寸
+        const canvas = document.createElement('canvas')
+        const maxSize = 200 // 限制缩略图最大尺寸
+        const ratio = Math.min(maxSize / video.videoWidth, maxSize / video.videoHeight)
+        canvas.width = video.videoWidth * ratio
+        canvas.height = video.videoHeight * ratio
+        
+        // 绘制视频帧
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+        
+        // 转换为base64并返回
+        const thumbnail = canvas.toDataURL('image/jpeg', 0.7) // 使用较低质量以减小大小
+        
+        // 清理资源
+        video.remove()
+        canvas.remove()
+        
+        resolve(thumbnail)
+      } catch (error) {
+        console.error('生成缩略图失败:', error)
+        reject(error)
+      }
+    }
+    
+    // 设置视频源并开始加载
+    video.src = videoPath
+  }).catch(error => {
+    console.warn('获取视频缩略图失败:', error)
+    return null // 失败时返回 null
   })
 }
 
@@ -1028,7 +1301,7 @@ const handleStickerImageLoad = (event, sticker) => {
   const naturalWidth = img.naturalWidth
   const naturalHeight = img.naturalHeight
   
-  // 计算宽高比
+  // 计算宽比
   const aspectRatio = naturalWidth / naturalHeight
   
   // 更新贴片尺寸以匹配图片比例
@@ -1051,6 +1324,14 @@ const handleStickerImageLoad = (event, sticker) => {
     })
   }
 }
+
+// 添加判断函数
+const isVideoSticker = (sticker) => {
+  return sticker?.url?.match(/\.(mp4|webm|mov)$/i)
+}
+
+// 1. 首先添加一个新的 ref 来存储所有视频贴片的引用
+const stickerVideoRefs = ref(new Map())
 </script>
 
 <style scoped>
@@ -1370,5 +1651,55 @@ const handleStickerImageLoad = (event, sticker) => {
 .video-preview .anticon {
   font-size: 24px;
   color: #999;
+}
+
+.time-control-panel {
+  padding: 16px;
+}
+
+.timeline {
+  height: 60px;
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.timeline-ruler {
+  height: 20px;
+  background: #f0f0f0;
+  position: relative;
+}
+
+.timeline-track {
+  height: 40px;
+  background: #fafafa;
+  position: relative;
+}
+
+.video-block {
+  position: absolute;
+  height: 30px;
+  top: 5px;
+  background: #1890ff;
+  border-radius: 4px;
+  cursor: move;
+}
+
+.video-block:hover {
+  background: #40a9ff;
+}
+
+.time-inputs {
+  margin-bottom: 16px;
+}
+
+.unit {
+  margin-left: 8px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.preview-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 </style> 

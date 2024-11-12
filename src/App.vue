@@ -1053,7 +1053,8 @@ const initLocalResources = async () => {
     const stickers = [
       { id: 'sticker1', name: '赫莲娜机制片1', path: '/assets/stickers/helena-sticker.png' },
       { id: 'sticker2', name: '海蓝之谜机制贴片1', path: '/assets/stickers/lamer-sticker.png' },
-      { id: 'sticker3', name: '测试视频贴片', path: '/assets/stickers/video-sticker.mp4' },
+      { id: 'sticker3', name: '测试视频贴片1', path: '/assets/stickers/video-sticker.mp4' },
+      { id: 'sticker4', name: '测试视频贴片2', path: '/assets/stickers/video-sticker2.webm' },
     ]
 
     // 预加载所有贴片的预览图

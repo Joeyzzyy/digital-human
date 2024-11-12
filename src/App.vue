@@ -147,7 +147,7 @@
 
     <!-- 原有的控制面板 -->
     <div class="control-panel">
-      <!-- 图层管理面板 -->
+      <!-- 图层理面板 -->
       <a-card title="图层管理" :bordered="false" size="small">
         <a-list
           :data-source="layers"
@@ -234,28 +234,26 @@
 
     <!-- 进度弹窗 -->
     <a-modal
-      v-model:open="showExportProgress"
+      v-model:visible="showExportProgress"
       title="导出进度"
       :closable="false"
       :maskClosable="false"
+      :keyboard="false"
       :footer="null"
       centered
     >
       <div class="export-progress">
         <a-progress :percent="exportProgress" status="active" />
         <div class="export-info">
-          <p>预计剩余时间: {{ remainingTime }}</p>
-          <p>资源加载进度:</p>
-          <ul class="resource-loading-list">
-            <li>
-              <check-circle-outlined :style="{ color: backgroundUrl ? '#52c41a' : '#d9d9d9' }" />
-              背景图片
-            </li>
-            <li>
-              <check-circle-outlined :style="{ color: loadedStickers.size === stickers.length ? '#52c41a' : '#d9d9d9' }" />
-              贴片素材 ({{ loadedStickers.size }}/{{ stickers.length }})
-            </li>
-          </ul>
+          <p>正在导出视频，请稍候...</p>
+          <a-button 
+            type="primary" 
+            danger
+            :loading="isStoppingExport"
+            @click="handleStopExport"
+          >
+            停止导出
+          </a-button>
         </div>
       </div>
     </a-modal>
@@ -370,7 +368,7 @@ const preloadResources = async () => {
           )
         }
       } else {
-        // 对于图片贴片，加载图片
+        // 图片贴片，加载图片
         loadPromises.push(loadImage(sticker.url, sticker.id))
       }
     }
@@ -611,7 +609,6 @@ const startExport = async () => {
         }
       }
       
-      // 开始录���
       mediaRecorder.value.start(1000)
       
       // 开始渲染循环
@@ -680,59 +677,99 @@ const renderFrame = async () => {
           const sticker = stickers.find(s => s.id === layer.id)
           if (!sticker) continue
           
+          // 第一个日志：在计算缩放比例之前，记录原始信息
+          console.log('贴片渲染信息:', {
+            编辑时位置: {
+              x: sticker.x,
+              y: sticker.y,
+              width: sticker.width,
+              height: sticker.height
+            },
+            画布信息: {
+              canvasWidth: canvasWidth.value,
+              canvasHeight: canvasHeight.value,
+              exportWidth: exportCanvas.value.width,
+              exportHeight: exportCanvas.value.height
+            }
+          })
+          
+          // 计算缩放比例
+          const scaleX = exportCanvas.value.width / canvasWidth.value
+          const scaleY = exportCanvas.value.height / canvasHeight.value
+          
+          // 计算渲染位置和尺寸（保持精确值，不要过早取整）
+          const renderX = sticker.x * scaleX
+          const renderY = sticker.y * scaleY
+          const renderWidth = sticker.width * scaleX
+          const renderHeight = sticker.height * scaleY
+          
+          // 第二个日志：在计算完转换后的位置后，记录转换结果
+          console.log('贴片导出转换:', {
+            id: sticker.id,
+            缩放比例: { scaleX, scaleY },
+            导出时位置: {
+              x: renderX,
+              y: renderY,
+              width: renderWidth,
+              height: renderHeight
+            }
+          })
+          
           if (isVideoSticker(sticker)) {
             // 处理视频贴片
             const videoElement = stickerVideoRefs.value.get(sticker.id)
-            if (videoElement) {
-              // 检查是否应该显示这个视频贴片
-              const startTime = sticker.videoProps.startAt || 0
-              const duration = sticker.videoProps.duration || 0
+            
+            if (videoElement && videoElement.readyState >= 2) {
+              const startTime = sticker.videoProps?.startAt || 0
+              const duration = sticker.videoProps?.duration || 0
               
               // 只有在主视频时间在贴片的播放时间范围内才渲染
               if (mainVideoTime >= startTime && mainVideoTime <= (startTime + duration)) {
-                // 算贴片应该显示的间点
+                // 计算贴片应该显示的时间点
                 const clipTime = mainVideoTime - startTime
                 
-                // 如果视频贴片循环播放，使用取模计算当前时间
-                if (sticker.videoProps.loop) {
-                  videoElement.currentTime = clipTime % duration
-                } else {
-                  videoElement.currentTime = Math.min(clipTime, duration)
+                // 只有当时间差异较大时才更新时间
+                const currentClipTime = videoElement.currentTime
+                const timeDiff = Math.abs(currentClipTime - clipTime)
+                if (timeDiff > 0.1) { // 添加阈值，避免频繁更新
+                  if (sticker.videoProps?.loop) {
+                    videoElement.currentTime = clipTime % duration
+                  } else {
+                    videoElement.currentTime = Math.min(clipTime, duration)
+                  }
                 }
                 
                 // 计算渲染位置和尺寸
-                const renderX = Math.round((sticker.x / canvasWidth) * exportCanvas.value.width)
-                const renderY = Math.round((sticker.y / canvasHeight) * exportCanvas.value.height)
-                const exportWidth = Math.round(sticker.width * (exportCanvas.value.width / canvasWidth))
-                const exportHeight = Math.round(sticker.height * (exportCanvas.value.height / canvasHeight))
+                const scaleX = exportCanvas.value.width / canvasWidth.value
+                const scaleY = exportCanvas.value.height / canvasHeight.value
+                
+                const renderX = Math.round(sticker.x * scaleX)
+                const renderY = Math.round(sticker.y * scaleY)
+                const renderWidth = Math.round(sticker.width * scaleX)
+                const renderHeight = Math.round(sticker.height * scaleY)
                 
                 // 渲染视频贴片
                 ctx.drawImage(
                   videoElement,
                   renderX,
                   renderY,
-                  exportWidth,
-                  exportHeight
+                  renderWidth,
+                  renderHeight
                 )
               }
             }
           } else {
-            // 处��图片贴片
+            // 处理图片贴片
             const img = stickerImagesCache.get(sticker.id)
             if (!img?.complete) continue
             
-            // 计算导出尺寸和位置
-            const renderX = Math.round((sticker.x / canvasWidth) * exportCanvas.value.width)
-            const renderY = Math.round((sticker.y / canvasHeight) * exportCanvas.value.height)
-            const exportWidth = Math.round(sticker.width * (exportCanvas.value.width / canvasWidth))
-            const exportHeight = Math.round(sticker.height * (exportCanvas.value.height / canvasHeight))
-
+            // 使精确值进行染
             ctx.drawImage(
               img,
               renderX,
               renderY,
-              exportWidth,
-              exportHeight
+              renderWidth,
+              renderHeight
             )
           }
           break
@@ -765,7 +802,7 @@ const initExportCanvas = () => {
     willReadFrequently: false  // 不需要频繁读像素数据
   })
   
-  // 设置图像平滑
+  // 设置图像滑
   exportContext.value.imageSmoothingEnabled = true
   exportContext.value.imageSmoothingQuality = 'high'
   
@@ -780,58 +817,71 @@ const stopExport = async () => {
   if (!isExporting.value) return
   
   try {
-    // 暂停主视频
+    // 设置不保存视频的标志
+    shouldSaveVideo.value = videoRef.value?.ended || false
+    
+    // 暂停主视频 - 修改这部分代码
     if (videoRef.value) {
       try {
-        await videoRef.value.pause()
+        videoRef.value.pause()
       } catch (err) {
         console.warn('暂停主视频失败:', err)
       }
     }
     
     // 停止所有视频贴片的播放
-    const pausePromises = []
     for (const videoElement of stickerVideoRefs.value.values()) {
-      if (videoElement && !videoElement.paused && typeof videoElement.pause === 'function') {
+      if (videoElement) {
         try {
-          pausePromises.push(
-            new Promise((resolve) => {
-              videoElement.pause()
-                .then(() => resolve())
-                .catch((err) => {
-                  console.warn('暂停视频贴片失败:', err)
-                  resolve() // 即使失败也resolve
-                })
-            })
-          )
+          videoElement.pause()
         } catch (err) {
-          console.warn('创建暂停Promise失败:', err)
+          console.warn('暂停视频贴片失败:', err)
         }
-      }
-    }
-    
-    // 等待所有暂停操作完
-    if (pausePromises.length > 0) {
-      try {
-        await Promise.all(pausePromises)
-      } catch (err) {
-        console.warn('等待视频暂停时出错:', err)
       }
     }
     
     // 停止媒体录制
     if (mediaRecorder.value && mediaRecorder.value.state !== 'inactive') {
+      // 移除旧的 onstop 处理器
+      mediaRecorder.value.onstop = null
+      
+      // 添加新的 onstop 处理器
+      mediaRecorder.value.onstop = () => {
+        if (shouldSaveVideo.value) {
+          // 只有在正常完成时才保存视频
+          try {
+            const blob = new Blob(recordedChunks.value, { type: 'video/webm' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = 'output.webm'
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+            message.success('视频导出成功')
+          } catch (err) {
+            console.error('保存导出文件失败:', err)
+            message.error('保存导出文件失败')
+          }
+        } else {
+          console.log('导出已取消，不保存视频')
+        }
+        
+        // 重置状态
+        isExporting.value = false
+        showExportProgress.value = false
+        exportProgress.value = 0
+        recordedChunks.value = []
+        shouldSaveVideo.value = true // 重置标志
+      }
+      
       try {
         mediaRecorder.value.stop()
       } catch (err) {
         console.error('停止媒体录制失败:', err)
       }
     }
-    
-    // 重置状态
-    isExporting.value = false
-    showExportProgress.value = false
-    exportProgress.value = 0
     
     console.log('导出停止完成')
     
@@ -842,6 +892,8 @@ const stopExport = async () => {
     isExporting.value = false
     showExportProgress.value = false
     exportProgress.value = 0
+    recordedChunks.value = []
+    shouldSaveVideo.value = true // 重置标志
   }
 }
 
@@ -1198,11 +1250,11 @@ const selectVideo = (video) => {
     if (videoLayerIndex !== -1) {
       layers.splice(videoLayerIndex, 1)
     }
-    message.success(`��移除视频：${video.name}`)
+    message.success(`移除视频：${video.name}`)
   } else {
     // 选择新视频
     videoUrl.value = video.path
-    // 检查是否已存在视频图层
+    // 检查是否已存在频图层
     const existingVideoLayer = layers.find(layer => layer.type === 'video')
     if (!existingVideoLayer) {
       // 添加到图层管理顶部(而不是固定位置)
@@ -1344,7 +1396,7 @@ const handleStickerImageLoad = (event, sticker) => {
   }
 }
 
-// 添加判断函数
+// 添加判断���数
 const isVideoSticker = (sticker) => {
   return sticker?.url?.match(/\.(mp4|webm|mov)$/i)
 }
@@ -1639,6 +1691,63 @@ watch(stickerImagesCache, (newCache) => {
     缓存键列表: Array.from(newCache.keys())
   })
 }, { deep: true })
+
+// 1. 在 script setup 顶部添加画布尺寸变量
+const canvasWidth = ref(0)
+const canvasHeight = ref(0)
+
+// 在mounted时获取真实尺寸
+onMounted(() => {
+  // 获取画布的实际显示尺寸
+  const updateCanvasSize = () => {
+    if (canvasRef.value) {
+      canvasWidth.value = canvasRef.value.clientWidth
+      canvasHeight.value = canvasRef.value.clientHeight
+      
+      console.log('更新画布尺寸:', {
+        实际尺寸: {
+          width: canvasWidth.value,
+          height: canvasHeight.value
+        },
+        导出尺寸: {
+          width: exportCanvas.value?.width || 1080,
+          height: exportCanvas.value?.height || 1920
+        }
+      })
+    }
+  }
+  
+  // 初始更新
+  updateCanvasSize()
+  
+  // 监听窗口大小变化
+  window.addEventListener('resize', updateCanvasSize)
+  
+  // 组件卸载时移除监听
+  onUnmounted(() => {
+    window.removeEventListener('resize', updateCanvasSize)
+  })
+})
+
+// 添加新的响应式变量
+const shouldSaveVideo = ref(true)
+const isStoppingExport = ref(false)
+
+// 添加停止导出的处理函数
+const handleStopExport = async () => {
+  if (isStoppingExport.value) return
+  
+  try {
+    isStoppingExport.value = true
+    await stopExport()
+    message.success('已停止导出')
+  } catch (error) {
+    console.error('停止导出失败:', error)
+    message.error('停止导出失败')
+  } finally {
+    isStoppingExport.value = false
+  }
+}
 </script>
 
 <style scoped>
